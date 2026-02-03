@@ -162,8 +162,11 @@ def main():
                     
                     # 映射中位 (精细调节模式)
                     # 将旋钮全程映射到 1350us ~ 1650us (±150us)
-                    # 这样灵敏度降低，调节更细腻
-                    target_mid = int(1350 + (knob_raw - 200) / 1600.0 * 300)
+                    # 方向反转：(1800 - knob_raw) 
+                    # 假设 knob_raw 范围 200~1800
+                    # 1800 - 200 = 1600 (Max span)
+                    
+                    target_mid = int(1350 + (1800 - knob_raw) / 1600.0 * 300)
                     target_mid = max(1350, min(target_mid, 1650))
                     
                     # 实时驱动转向舵机回中 (此时不响应方向摇杆)
@@ -175,9 +178,9 @@ def main():
                     # 如果之前在校准模式，现在切回来了 -> 保存！
                     if in_calibration_mode:
                         print(f"\nExiting calibration. Saving new MID...")
-                        # 读取最后一次的 CH8 值计算中位
+                        # 读取最后一次的 CH8 值计算中位 (同样应用反转逻辑)
                         knob_raw = sbus.get_channel(CH_CALIB_KNOB)
-                        final_mid = int(1350 + (knob_raw - 200) / 1600.0 * 300)
+                        final_mid = int(1350 + (1800 - knob_raw) / 1600.0 * 300)
                         final_mid = max(1350, min(final_mid, 1650))
                         
                         servo.save_calibration(final_mid)
