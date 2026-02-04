@@ -17,12 +17,13 @@ output_frame = None
 frame_condition = threading.Condition()
 frame_id = 0  # 帧计数器，用于丢帧检测
 
-# ============ 极致低延迟模式配置 ============
-# 清晰度：降低以换取更小的体积
-FIXED_JPEG_QUALITY = 20      
-# 帧率：提高帧率以减少输入延迟（30fps -> 33ms 间隔，而 10fps -> 100ms 间隔）
+# ============ 极致低延迟模式配置 (ABR 自适应版) ============
+# 初始配置
+MIN_QUALITY = 5              # 最低画质（马赛克级，但也能看）
+MAX_QUALITY = 30             # 最高画质
+CURRENT_QUALITY = 20         # 当前动态画质
 TARGET_FPS = 30              
-FRAME_SKIP_THRESHOLD = 5     
+FRAME_SKIP_THRESHOLD = 5     # 恢复为5，避免过于频繁的跳帧导致画面不连贯     
 
 # 简单的全屏 HTML 模板
 # 将视频流作为背景全屏显示，padding:0, margin:0 
@@ -60,7 +61,7 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
         pass  # 禁用日志输出，减少CPU开销
     
     def do_GET(self):
-        global output_frame, frame_id
+        global output_frame, frame_id, CURRENT_QUALITY
         
         # 1. 如果访问根路径 /，返回 HTML 网页（大屏幕模式）
         if self.path == '/':
@@ -117,14 +118,17 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
                     # 3. 压缩 JPEG（使用 PyTurboJPEG 如果可用，速度快3倍）
                     if USE_TURBOJPEG:
                         # pixel_format=TJPF_BGR 是默认的 OpenCV 格式
-                        encodedImage = jpeg.encode(frame, quality=FIXED_JPEG_QUALITY)
+                        encodedImage = jpeg.encode(frame, quality=int(CURRENT_QUALITY))
                     else:
-                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), FIXED_JPEG_QUALITY]
+                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), int(CURRENT_QUALITY)]
                         (flag, encodedImage) = cv2.imencode(".jpg", frame, encode_param)
                         if not flag:
                             continue
                     
                     try:
+                        # 记录发送开始时间
+                        t_start_send = time.perf_counter()
+
                         self.wfile.write(b'--frame\r\n')
                         self.wfile.write(b'Content-Type: image/jpeg\r\n\r\n')
                         if USE_TURBOJPEG:
@@ -133,6 +137,17 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
                             self.wfile.write(bytearray(encodedImage))
                         self.wfile.write(b'\r\n')
                         self.wfile.flush()
+                        
+                        # 计算发送耗时
+                        t_send_duration = time.perf_counter() - t_start_send
+
+                        # === ABR 自适应码率算法 ===
+                        # 如果发送耗时超过 50ms（说明网络开始拥堵），迅速降低画质
+                        if t_send_duration > 0.05:
+                            CURRENT_QUALITY = max(MIN_QUALITY, CURRENT_QUALITY - 5)
+                        # 如果发送很快（<20ms），缓慢恢复画质
+                        elif t_send_duration < 0.02 and CURRENT_QUALITY < MAX_QUALITY:
+                            CURRENT_QUALITY += 1
                         
                         last_sent_frame_id = current_frame_id
                         last_send_time = now
