@@ -4,17 +4,25 @@ import time
 import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+try:
+    from turbojpeg import TurboJPEG
+    # 尝试初始化 TurboJPEG，失败则回退到 OpenCV
+    jpeg = TurboJPEG()
+    USE_TURBOJPEG = True
+except:
+    USE_TURBOJPEG = False
 
 # 全局帧缓冲与同步条件变量
 output_frame = None
 frame_condition = threading.Condition()
 frame_id = 0  # 帧计数器，用于丢帧检测
 
-# ============ 低带宽模式配置 ============
-# 平衡清晰度与带宽（彩色 + 可辨认）
-FIXED_JPEG_QUALITY = 15      # 15 保证彩色，带宽更低
-TARGET_FPS = 10              # 限制帧率，减少带宽
-FRAME_SKIP_THRESHOLD = 2     # 如果落后超过2帧就丢弃
+# ============ 极致低延迟模式配置 ============
+# 清晰度：降低以换取更小的体积
+FIXED_JPEG_QUALITY = 20      
+# 帧率：提高帧率以减少输入延迟（30fps -> 33ms 间隔，而 10fps -> 100ms 间隔）
+TARGET_FPS = 30              
+FRAME_SKIP_THRESHOLD = 5     
 
 # 简单的全屏 HTML 模板
 # 将视频流作为背景全屏显示，padding:0, margin:0 
@@ -106,17 +114,23 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
                     if now - last_send_time < min_frame_interval:
                         continue
                     
-                    # 3. 压缩 JPEG（极低质量，优先流畅度）
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), FIXED_JPEG_QUALITY]
-                    (flag, encodedImage) = cv2.imencode(".jpg", frame, encode_param)
-                    
-                    if not flag:
-                        continue
+                    # 3. 压缩 JPEG（使用 PyTurboJPEG 如果可用，速度快3倍）
+                    if USE_TURBOJPEG:
+                        # pixel_format=TJPF_BGR 是默认的 OpenCV 格式
+                        encodedImage = jpeg.encode(frame, quality=FIXED_JPEG_QUALITY)
+                    else:
+                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), FIXED_JPEG_QUALITY]
+                        (flag, encodedImage) = cv2.imencode(".jpg", frame, encode_param)
+                        if not flag:
+                            continue
                     
                     try:
                         self.wfile.write(b'--frame\r\n')
                         self.wfile.write(b'Content-Type: image/jpeg\r\n\r\n')
-                        self.wfile.write(bytearray(encodedImage))
+                        if USE_TURBOJPEG:
+                            self.wfile.write(encodedImage)
+                        else:
+                            self.wfile.write(bytearray(encodedImage))
                         self.wfile.write(b'\r\n')
                         self.wfile.flush()
                         
@@ -135,8 +149,8 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     pass
 
 class CameraStream:
-    # 平衡模式：清晰度与带宽兼顾
-    def __init__(self, port=8080, device='/dev/video0', width=480, height=360):
+    # 极致性能模式配置：分辨率降至 320x240
+    def __init__(self, port=8080, device='/dev/video0', width=320, height=240):
         self.port = port
         self.device = device
         self.width = width
